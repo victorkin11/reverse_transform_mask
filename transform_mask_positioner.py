@@ -18,7 +18,7 @@ class Transform_Mask_Positioner(Extension):
         )
         action.triggered.connect(self.action_triggered)
 
-    def get_reference_rectangles(self):
+    def get_reference_rectangles(self, vl_name_prefix):
         """Extract all reference rectangles from '#ref-' vector layers."""
         doc = Krita.instance().activeDocument()
         rectangles = {}
@@ -27,7 +27,6 @@ class Transform_Mask_Positioner(Extension):
             if node.type() != "grouplayer" or node.name() == "xxx":
                 continue
 
-            vl_name_prefix = "#vl-"
             for child in node.childNodes():
                 if (
                     child.name().startswith(vl_name_prefix)
@@ -159,19 +158,42 @@ class Transform_Mask_Positioner(Extension):
 
         print(f"Document size: {doc.width()}x{doc.height()}px")
 
-        rectangles = self.get_reference_rectangles()
-        if not rectangles:
-            QMessageBox.warning(None, "Error", "No '#vl-' vector layers found!")
+        vl_name_prefix_long = "#vl_long-"
+        rectangles_long = self.get_reference_rectangles(vl_name_prefix_long)
+        vl_name_prefix_wide = "#vl_wide-"
+        rectangles_wide = self.get_reference_rectangles(vl_name_prefix_wide)
+        if not rectangles_long:
+            QMessageBox.warning(
+                None, "Error", f"No {vl_name_prefix_long} vector layers found!"
+            )
+            return
+
+        if not rectangles_wide:
+            QMessageBox.warning(
+                None, "Error", f"No {vl_name_prefix_wide} vector layers found!"
+            )
             return
 
         # Process all transform masks
         for mask in self.find_all_transform_masks(doc.rootNode()):
+            mask_bounds = mask.bounds()  # design
+            design_w = mask_bounds.width()
+            design_h = mask_bounds.height()
+            if design_h >= design_w:
+                # long
+                rectangles = rectangles_long
+            else:
+                # wide
+                rectangles = rectangles_wide
 
             mask_name = mask.name().lower()
             for color, rect in rectangles.items():
                 if color in mask_name:
                     self.fit_mask_to_rect(mask, rect)
+                    doc.waitForDone()
                     doc.refreshProjection()
+                    doc.waitForDone()
+                    time.sleep(0.3)
                     break
 
         # QMessageBox.information(None, "Done", "Masks fitted to rectangles!")

@@ -6,6 +6,8 @@ import xml.etree.ElementTree as ET
 
 
 class Transform_Mask_Positioner(Extension):
+    VECTOR_LAYER_DPI = 72.0
+
     def __init__(self, parent):
         super().__init__(parent)
 
@@ -18,8 +20,10 @@ class Transform_Mask_Positioner(Extension):
         )
         action.triggered.connect(self.action_triggered)
 
+    # scriptttt
+
     def get_reference_rectangles(self, vl_name_prefix):
-        """Extract all reference rectangles from '#ref-' vector layers."""
+        """Extract all reference rectangles from vector layers."""
         doc = Krita.instance().activeDocument()
         rectangles = {}
 
@@ -34,22 +38,31 @@ class Transform_Mask_Positioner(Extension):
                 ):
                     mockup = child.name().split(vl_name_prefix)[-1].lower()
                     if child.shapes():
-                        for shape in child.shapes():
-                            print("shape", shape.boundingBox())
-
                         bounds = child.shapes()[0].boundingBox()
                         dpi = doc.resolution()
 
+                        # center x and y
+                        # fmt:off
                         rectangles[mockup] = {
-                            "x": (bounds.x() + bounds.width() / 2) * dpi / 72.0,
-                            "y": (bounds.y() + bounds.height() / 2) * dpi / 72.0,
-                            "width": bounds.width() * dpi / 72.0,
-                            "height": bounds.height() * dpi / 72.0,
+                            "x": (bounds.x() + bounds.width() / 2) * dpi / self.VECTOR_LAYER_DPI,
+                            "y": (bounds.y() + bounds.height() / 2) * dpi / self.VECTOR_LAYER_DPI, 
+                            "width": bounds.width() * dpi / self.VECTOR_LAYER_DPI, 
+                            "height": bounds.height() * dpi / self.VECTOR_LAYER_DPI,
                         }
-
+                        # fmt:on
         return rectangles
 
-    def set_transform_mask_center_and_scale(
+    def find_all_transform_masks(self, root_node):
+        """Recursively find all transform masks in the layer tree."""
+        masks = []
+        for node in root_node.childNodes():
+            if node.type() == "transformmask":
+                masks.append(node)
+            elif node.childNodes():  # Search groups/folders
+                masks.extend(self.find_all_transform_masks(node))
+        return masks
+
+    def transform_mask_xml_transform(
         self,
         transform_mask,
         center_x,
@@ -109,12 +122,7 @@ class Transform_Mask_Positioner(Extension):
             print(f"Error: {mask.name()} is not a transform mask or no document active")
             return
 
-        # if not "black" in mask.name():
-        #     return
-        # else:
-        #     print(mask.name())
-
-        print("rect", rect)
+        # print("rect", rect)
 
         # scale
         mask_bounds = mask.bounds()  # design
@@ -142,7 +150,7 @@ class Transform_Mask_Positioner(Extension):
         center_y = rect["y"]
 
         # position
-        self.set_transform_mask_center_and_scale(
+        self.transform_mask_xml_transform(
             mask, center_x, center_y, scale_x, scale_y, True
         )
         doc.waitForDone()
@@ -150,18 +158,100 @@ class Transform_Mask_Positioner(Extension):
         doc.waitForDone()
         time.sleep(0.3)
 
+    def reset_transform_mask_xml(self, transform_mask):
+        """
+        Reset a Krita transform mask to default (no transform).
+        """
+        xml_str = transform_mask.toXML()
+        root = ET.fromstring(xml_str)
+
+        # Reset position
+        tc = root.find(".//transformedCenter")
+        oc = root.find(".//originalCenter")
+        if tc is not None and oc is not None:
+            tc.set("x", oc.get("x"))
+            tc.set("y", oc.get("y"))
+
+        # Reset scale
+        sx = root.find(".//scaleX")
+        if sx is not None:
+            sx.set("value", "1")
+        sy = root.find(".//scaleY")
+        if sy is not None:
+            sy.set("value", "1")
+
+        # Reset rotation
+        ax = root.find(".//aX")
+        if ax is not None:
+            ax.set("value", "0")
+        ay = root.find(".//aY")
+        if ay is not None:
+            ay.set("value", "0")
+        az = root.find(".//aZ")
+        if az is not None:
+            az.set("value", "0")
+
+        # Reset shear
+        shx = root.find(".//shearX")
+        if shx is not None:
+            shx.set("value", "0")
+        shy = root.find(".//shearY")
+        if shy is not None:
+            shy.set("value", "0")
+
+        # Reset perspective matrix
+        persp = root.find(".//flattenedPerspectiveTransform")
+        if persp is not None:
+            persp.set("m11", "1")
+            persp.set("m12", "0")
+            persp.set("m13", "0")
+            persp.set("m21", "0")
+            persp.set("m22", "1")
+            persp.set("m23", "0")
+            persp.set("m31", "0")
+            persp.set("m32", "0")
+            persp.set("m33", "1")
+
+        # Apply back
+        new_xml_str = ET.tostring(root, encoding="unicode")
+        transform_mask.fromXML(new_xml_str)
+
     def action_triggered(self):
         doc = Krita.instance().activeDocument()
         if not doc:
             QMessageBox.warning(None, "Error", "No active document!")
             return
 
-        print(f"Document size: {doc.width()}x{doc.height()}px")
+        # progress bar
+        total_groups = sum(
+            1 for node in doc.rootNode().childNodes() if node.type() == "grouplayer"
+        )
+        progress = QProgressDialog(
+            "Transforming the Transform Layers...", "Cancel", 0, total_groups
+        )
+        progress.setWindowTitle("Batch Transform")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+
+        # print(f"Document size: {doc.width()}x{doc.height()}px")
+
+        # force long!
+        reply = QMessageBox.question(
+            None,
+            "Force Long Rectangle",
+            "Do you want to force long rectangle ?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+
+        do_force_long = False
+        if reply == QMessageBox.Yes:
+            do_force_long = True
 
         vl_name_prefix_long = "#vl_long-"
         rectangles_long = self.get_reference_rectangles(vl_name_prefix_long)
         vl_name_prefix_wide = "#vl_wide-"
         rectangles_wide = self.get_reference_rectangles(vl_name_prefix_wide)
+
         if not rectangles_long:
             QMessageBox.warning(
                 None, "Error", f"No {vl_name_prefix_long} vector layers found!"
@@ -176,16 +266,23 @@ class Transform_Mask_Positioner(Extension):
 
         # Process all transform masks
         for mask in self.find_all_transform_masks(doc.rootNode()):
+            # reset the t-mask
+            self.reset_transform_mask_xml(mask)
+
             mask_bounds = mask.bounds()  # design
             design_w = mask_bounds.width()
             design_h = mask_bounds.height()
-            if design_h >= design_w:
-                # long
+            if do_force_long:  # long
                 rectangles = rectangles_long
             else:
-                # wide
-                rectangles = rectangles_wide
+                if design_h >= design_w:
+                    # long
+                    rectangles = rectangles_long
+                else:
+                    # wide
+                    rectangles = rectangles_wide
 
+            # match the t-mask name with vector layer name (#vl_long-black->black must be inside tmaks layer name eg. tm-black)
             mask_name = mask.name().lower()
             for color, rect in rectangles.items():
                 if color in mask_name:
@@ -196,14 +293,9 @@ class Transform_Mask_Positioner(Extension):
                     time.sleep(0.3)
                     break
 
-        # QMessageBox.information(None, "Done", "Masks fitted to rectangles!")
+            # progress
+            progress.setValue(progress.value() + 1)
+            QApplication.processEvents()
 
-    def find_all_transform_masks(self, root_node):
-        """Recursively find all transform masks in the layer tree."""
-        masks = []
-        for node in root_node.childNodes():
-            if node.type() == "transformmask":
-                masks.append(node)
-            elif node.childNodes():  # Search groups/folders
-                masks.extend(self.find_all_transform_masks(node))
-        return masks
+        progress.close()
+        QMessageBox.information(None, "Done", "Transform Masks fitted to rectangles!")

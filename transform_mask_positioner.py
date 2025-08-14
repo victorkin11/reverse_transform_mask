@@ -1,8 +1,11 @@
 from krita import *
 import os
 import time
-from PyQt5.QtWidgets import QApplication, QProgressDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QProgressDialog, QMessageBox, QMenu
 import xml.etree.ElementTree as ET
+
+EXTENSION_ID = "transform_mask_positioner"
+MENU_ENTRY = "1 OFM Transform T-masks"
 
 
 class Transform_Mask_Positioner(Extension):
@@ -15,10 +18,23 @@ class Transform_Mask_Positioner(Extension):
         pass
 
     def createActions(self, window):
-        action = window.createAction(
-            "transform_mask_positioner_ext", "OFM Tmask Pos", "tools/scripts"
+        action = window.createAction(EXTENSION_ID, MENU_ENTRY, "tools/scripts")
+        menu = QtWidgets.QMenu(EXTENSION_ID, window.qwindow())
+        action.setMenu(menu)
+
+        # sub menu do for all
+        subaction1 = window.createAction(
+            f"{EXTENSION_ID}_doForAll", "Do For All", f"tools/scripts/{EXTENSION_ID}"
         )
-        action.triggered.connect(self.action_triggered)
+        subaction1.triggered.connect(self.action_do_for_all)
+
+        # sub menu do for selected
+        subaction1 = window.createAction(
+            f"{EXTENSION_ID}_doForSelected",
+            "Do For Selected",
+            f"tools/scripts/{EXTENSION_ID}",
+        )
+        subaction1.triggered.connect(self.action_do_for_selected)
 
     # scriptttt
 
@@ -27,10 +43,13 @@ class Transform_Mask_Positioner(Extension):
         doc = Krita.instance().activeDocument()
         rectangles = {}
 
+        QMessageBox.information(None, "Error", root_node.name())
+
         for node in doc.rootNode().childNodes():
             if node.type() != "grouplayer" or node.name() == "xxx":
+                print("no yow")
                 continue
-
+            print("yow")
             for child in node.childNodes():
                 if (
                     child.name().startswith(vl_name_prefix)
@@ -50,6 +69,32 @@ class Transform_Mask_Positioner(Extension):
                             "height": bounds.height() * dpi / self.VECTOR_LAYER_DPI,
                         }
                         # fmt:on
+        return rectangles
+
+    def get_reference_rectangle_single(self, group_node, vl_name_prefix):
+        """Extract all reference rectangles from vector layers. DRY man DRY"""
+        doc = Krita.instance().activeDocument()
+        rectangles = {}
+
+        for child in group_node.childNodes():
+            if (
+                child.name().startswith(vl_name_prefix)
+                and child.type() == "vectorlayer"
+            ):
+                mockup = child.name().split(vl_name_prefix)[-1].lower()
+                if child.shapes():
+                    bounds = child.shapes()[0].boundingBox()
+                    dpi = doc.resolution()
+
+                    # center x and y
+                    # fmt:off
+                    rectangles[mockup] = {
+                        "x": (bounds.x() + bounds.width() / 2) * dpi / self.VECTOR_LAYER_DPI,
+                        "y": (bounds.y() + bounds.height() / 2) * dpi / self.VECTOR_LAYER_DPI, 
+                        "width": bounds.width() * dpi / self.VECTOR_LAYER_DPI, 
+                        "height": bounds.height() * dpi / self.VECTOR_LAYER_DPI,
+                    }
+                    # fmt:on
         return rectangles
 
     def find_all_transform_masks(self, root_node):
@@ -153,10 +198,10 @@ class Transform_Mask_Positioner(Extension):
         self.transform_mask_xml_transform(
             mask, center_x, center_y, scale_x, scale_y, True
         )
-        doc.waitForDone()
+
         doc.refreshProjection()
         doc.waitForDone()
-        time.sleep(0.3)
+        time.sleep(0.1)
 
     def reset_transform_mask_xml(self, transform_mask):
         """
@@ -216,10 +261,21 @@ class Transform_Mask_Positioner(Extension):
         new_xml_str = ET.tostring(root, encoding="unicode")
         transform_mask.fromXML(new_xml_str)
 
-    def action_triggered(self):
+    def action_do_for_all(self):
         doc = Krita.instance().activeDocument()
         if not doc:
             QMessageBox.warning(None, "Error", "No active document!")
+            return
+
+        if (
+            QMessageBox.question(
+                None,
+                "Transforming the Transformmasks!!",
+                "Do you want to contunie?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            == QMessageBox.No
+        ):
             return
 
         # progress bar
@@ -287,10 +343,6 @@ class Transform_Mask_Positioner(Extension):
             for color, rect in rectangles.items():
                 if color in mask_name:
                     self.fit_mask_to_rect(mask, rect)
-                    doc.waitForDone()
-                    doc.refreshProjection()
-                    doc.waitForDone()
-                    time.sleep(0.3)
                     break
 
             # progress
@@ -299,3 +351,84 @@ class Transform_Mask_Positioner(Extension):
 
         progress.close()
         QMessageBox.information(None, "Done", "Transform Masks fitted to rectangles!")
+
+    def action_do_for_selected(self):
+        doc = Krita.instance().activeDocument()
+        if not doc:
+            QMessageBox.warning(None, "Error", "No active document!")
+            return
+
+        if (
+            QMessageBox.question(
+                None,
+                "Transforming the One Transformmasks!!",
+                "Do you want to contunie?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            == QMessageBox.No
+        ):
+            return
+        # THE ONE!
+        mask = doc.activeNode()
+
+        if mask.type() != "transformmask":
+            QMessageBox.warning(None, "Error", "Selected layer must be transform mask!")
+            return
+
+        # force long!
+        reply = QMessageBox.question(
+            None,
+            "Force Long Rectangle",
+            "Do you want to force long rectangle ?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+
+        do_force_long = False
+        if reply == QMessageBox.Yes:
+            do_force_long = True
+
+        vl_name_prefix_long = "#vl_long-"
+        rectangle_long = self.get_reference_rectangle_single(
+            mask.parentNode().parentNode(), vl_name_prefix_long
+        )
+        vl_name_prefix_wide = "#vl_wide-"
+        rectangle_wide = self.get_reference_rectangle_single(
+            mask.parentNode().parentNode(), vl_name_prefix_wide
+        )
+
+        if not rectangle_long:
+            QMessageBox.warning(
+                None, "Error", f"No {vl_name_prefix_long} vector layers found!"
+            )
+            return
+
+        if not rectangle_wide:
+            QMessageBox.warning(
+                None, "Error", f"No {vl_name_prefix_wide} vector layers found!"
+            )
+            return
+
+        # reset the t-mask
+        self.reset_transform_mask_xml(mask)
+
+        mask_bounds = mask.bounds()  # design
+        design_w = mask_bounds.width()
+        design_h = mask_bounds.height()
+        if do_force_long:  # long
+            rectangles = rectangle_long
+        else:
+            if design_h >= design_w:
+                # long
+                rectangles = rectangle_long
+            else:
+                # wide
+                rectangles = rectangle_wide
+
+        # match the t-mask name with vector layer name (#vl_long-black->black must be inside tmaks layer name eg. tm-black)
+        mask_name = mask.name().lower()
+        for color, rect in rectangles.items():
+            if color in mask_name:
+                self.fit_mask_to_rect(mask, rect)
+                break
+
+        QMessageBox.information(None, "Done", "1T-mask fitted to rectangles!")

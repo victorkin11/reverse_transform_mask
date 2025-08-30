@@ -1,7 +1,7 @@
-from .transform_mask_positioner import Transform_Mask_Positioner
+from .reverse_transform_mask.py import Reverse_transform_mask
 
 # And add the extension to Krita's list of extensions:
 app = Krita.instance()
 # Instantiate your class:
-extension = Transform_Mask_Positioner(parent=app)
+extension = Reverse_transform_mask(parent=app)
 app.addExtension(extension)

@@ -1,16 +1,11 @@
 from krita import *
-import os
-import time
-from PyQt5.QtWidgets import QApplication, QProgressDialog, QMessageBox, QMenu
 import xml.etree.ElementTree as ET
+import math
 
-EXTENSION_ID = "transform_mask_positioner"
-MENU_ENTRY = "1 OFM Transform T-masks"
+EXTENSION_ID = "reverse_transform_mask"
+MENU_ENTRY = "Reverse Transform Mask"
 
-
-class Transform_Mask_Positioner(Extension):
-    VECTOR_LAYER_DPI = 72.0
-
+class ReverseTransformMask(Extension):
     def __init__(self, parent):
         super().__init__(parent)
 
@@ -19,416 +14,215 @@ class Transform_Mask_Positioner(Extension):
 
     def createActions(self, window):
         action = window.createAction(EXTENSION_ID, MENU_ENTRY, "tools/scripts")
-        menu = QtWidgets.QMenu(EXTENSION_ID, window.qwindow())
-        action.setMenu(menu)
+        action.triggered.connect(self.create_reverse_transform_mask)
 
-        # sub menu do for all
-        subaction1 = window.createAction(
-            f"{EXTENSION_ID}_doForAll", "Do For All", f"tools/scripts/{EXTENSION_ID}"
-        )
-        subaction1.triggered.connect(self.action_do_for_all)
-
-        # sub menu do for selected
-        subaction1 = window.createAction(
-            f"{EXTENSION_ID}_doForSelected",
-            "Do For Selected",
-            f"tools/scripts/{EXTENSION_ID}",
-        )
-        subaction1.triggered.connect(self.action_do_for_selected)
-
-    # scriptttt
-
-    def get_reference_rectangles(self, vl_name_prefix):
-        """Extract all reference rectangles from vector layers."""
-        doc = Krita.instance().activeDocument()
-        rectangles = {}
-
-        QMessageBox.information(None, "Error", root_node.name())
-
-        for node in doc.rootNode().childNodes():
-            if node.type() != "grouplayer" or node.name() == "xxx":
-                print("no yow")
-                continue
-            print("yow")
-            for child in node.childNodes():
-                if (
-                    child.name().startswith(vl_name_prefix)
-                    and child.type() == "vectorlayer"
-                ):
-                    mockup = child.name().split(vl_name_prefix)[-1].lower()
-                    if child.shapes():
-                        bounds = child.shapes()[0].boundingBox()
-                        dpi = doc.resolution()
-
-                        # center x and y
-                        # fmt:off
-                        rectangles[mockup] = {
-                            "x": (bounds.x() + bounds.width() / 2) * dpi / self.VECTOR_LAYER_DPI,
-                            "y": (bounds.y() + bounds.height() / 2) * dpi / self.VECTOR_LAYER_DPI, 
-                            "width": bounds.width() * dpi / self.VECTOR_LAYER_DPI, 
-                            "height": bounds.height() * dpi / self.VECTOR_LAYER_DPI,
-                        }
-                        # fmt:on
-        return rectangles
-
-    def get_reference_rectangle_single(self, group_node, vl_name_prefix):
-        """Extract all reference rectangles from vector layers. DRY man DRY"""
-        doc = Krita.instance().activeDocument()
-        rectangles = {}
-
-        for child in group_node.childNodes():
-            if (
-                child.name().startswith(vl_name_prefix)
-                and child.type() == "vectorlayer"
-            ):
-                mockup = child.name().split(vl_name_prefix)[-1].lower()
-                if child.shapes():
-                    bounds = child.shapes()[0].boundingBox()
-                    dpi = doc.resolution()
-
-                    # center x and y
-                    # fmt:off
-                    rectangles[mockup] = {
-                        "x": (bounds.x() + bounds.width() / 2) * dpi / self.VECTOR_LAYER_DPI,
-                        "y": (bounds.y() + bounds.height() / 2) * dpi / self.VECTOR_LAYER_DPI, 
-                        "width": bounds.width() * dpi / self.VECTOR_LAYER_DPI, 
-                        "height": bounds.height() * dpi / self.VECTOR_LAYER_DPI,
-                    }
-                    # fmt:on
-        return rectangles
-
-    def find_all_transform_masks(self, root_node):
-        """Recursively find all transform masks in the layer tree."""
-        masks = []
-        for node in root_node.childNodes():
-            if node.type() == "transformmask":
-                masks.append(node)
-            elif node.childNodes():  # Search groups/folders
-                masks.extend(self.find_all_transform_masks(node))
-        return masks
-
-    def transform_mask_xml_transform(
-        self,
-        transform_mask,
-        center_x,
-        center_y,
-        scale_x,
-        scale_y,
-        keepAspectRatio: bool = True,
-    ):
-        """
-        Set the transformed center position and scale of a Krita transform mask via XML.
-        """
-        print("new scale", scale_x, scale_y)
-        print("new pos", center_x, center_y)
-
+    def get_transform_parameters(self, transform_mask):
+        """Extract all transformation parameters from a transform mask."""
         xml_str = transform_mask.toXML()
         root = ET.fromstring(xml_str)
+        
+        params = {
+            "center_x": float(root.find(".//transformedCenter").get("x")),
+            "center_y": float(root.find(".//transformedCenter").get("y")),
+            "scale_x": float(root.find(".//scaleX").get("value")),
+            "scale_y": float(root.find(".//scaleY").get("value")),
+            "keep_aspect_ratio": root.find(".//keepAspectRatio").get("value") == "1",
+            "rotation_x": float(root.find(".//aX").get("value")),
+            "rotation_y": float(root.find(".//aY").get("value")),
+            "rotation_z": float(root.find(".//aZ").get("value")),
+            "shear_x": float(root.find(".//shearX").get("value")),
+            "shear_y": float(root.find(".//shearY").get("value")),
+        }
+        
+        # Get perspective transform matrix if available
+        persp = root.find(".//flattenedPerspectiveTransform")
+        if persp is not None:
+            params["perspective"] = {
+                "m11": float(persp.get("m11")),
+                "m12": float(persp.get("m12")),
+                "m13": float(persp.get("m13")),
+                "m21": float(persp.get("m21")),
+                "m22": float(persp.get("m22")),
+                "m23": float(persp.get("m23")),
+                "m31": float(persp.get("m31")),
+                "m32": float(persp.get("m32")),
+                "m33": float(persp.get("m33")),
+            }
+        
+        return params
 
+    def calculate_inverse_parameters(self, params):
+        """Calculate the inverse transformation parameters."""
+        inverse_params = {}
+        
+        # Inverse scale (1/scale)
+        inverse_params["scale_x"] = 1.0 / params["scale_x"] if params["scale_x"] != 0 else 1.0
+        inverse_params["scale_y"] = 1.0 / params["scale_y"] if params["scale_y"] != 0 else 1.0
+        
+        # Inverse rotation (negative angle)
+        inverse_params["rotation_x"] = -params["rotation_x"]
+        inverse_params["rotation_y"] = -params["rotation_y"]
+        inverse_params["rotation_z"] = -params["rotation_z"]
+        
+        # Inverse shear (negative)
+        inverse_params["shear_x"] = -params["shear_x"]
+        inverse_params["shear_y"] = -params["shear_y"]
+        
+        # Keep aspect ratio setting remains the same
+        inverse_params["keep_aspect_ratio"] = params["keep_aspect_ratio"]
+        
+        # Calculate inverse center position (more complex)
+        # This accounts for the scale and rotation of the original transform
+        # Formula: new_center = original_center - (offset * scale)
+        # For simplicity, we'll keep the same center point for the reverse transform
+        inverse_params["center_x"] = params["center_x"]
+        inverse_params["center_y"] = params["center_y"]
+        
+        # Calculate inverse perspective matrix if available
+        if "perspective" in params:
+            # This is a simplified approach - in reality, matrix inversion is more complex
+            # For a proper implementation, you'd need to calculate the actual matrix inverse
+            p = params["perspective"]
+            det = (p["m11"] * p["m22"] * p["m33"] +
+                   p["m12"] * p["m23"] * p["m31"] +
+                   p["m13"] * p["m21"] * p["m32"] -
+                   p["m13"] * p["m22"] * p["m31"] -
+                   p["m11"] * p["m23"] * p["m32"] -
+                   p["m12"] * p["m21"] * p["m33"])
+            
+            if abs(det) > 1e-6:  # If determinant is not zero (invertible)
+                inv_det = 1.0 / det
+                inverse_params["perspective"] = {
+                    "m11": (p["m22"] * p["m33"] - p["m23"] * p["m32"]) * inv_det,
+                    "m12": (p["m13"] * p["m32"] - p["m12"] * p["m33"]) * inv_det,
+                    "m13": (p["m12"] * p["m23"] - p["m13"] * p["m22"]) * inv_det,
+                    "m21": (p["m23"] * p["m31"] - p["m21"] * p["m33"]) * inv_det,
+                    "m22": (p["m11"] * p["m33"] - p["m13"] * p["m31"]) * inv_det,
+                    "m23": (p["m13"] * p["m21"] - p["m11"] * p["m23"]) * inv_det,
+                    "m31": (p["m21"] * p["m32"] - p["m22"] * p["m31"]) * inv_det,
+                    "m32": (p["m12"] * p["m31"] - p["m11"] * p["m32"]) * inv_det,
+                    "m33": (p["m11"] * p["m22"] - p["m12"] * p["m21"]) * inv_det,
+                }
+        
+        return inverse_params
+
+    def apply_transform_parameters(self, transform_mask, params):
+        """Apply transformation parameters to a transform mask via XML."""
+        xml_str = transform_mask.toXML()
+        root = ET.fromstring(xml_str)
+        
         # Update center
         tc = root.find(".//transformedCenter")
-        if tc is not None:  # wtf is not accepting if tc:
-            if center_x and center_y:
-                print("pos")
-                tc.set("x", str(center_x))
-                tc.set("y", str(center_y))
-
-        # Lanczos3 best for text i guess
-        filter_id = root.find(".//filterId")
-        if filter_id is not None:
-            filter_id.set("value", "Lanczos3")
-
+        if tc is not None:
+            tc.set("x", str(params["center_x"]))
+            tc.set("y", str(params["center_y"]))
+        
         # Update scale
         sx = root.find(".//scaleX")
         sy = root.find(".//scaleY")
-        kar = root.find(".//keepAspectRatio")
         if sx is not None and sy is not None:
-            print("sx_sy")
-            sx.set("value", str(scale_x))
-            sy.set("value", str(scale_y))
+            sx.set("value", str(params["scale_x"]))
+            sy.set("value", str(params["scale_y"]))
+        
+        # Update aspect ratio
+        kar = root.find(".//keepAspectRatio")
         if kar is not None:
-            print("kar")
-            kar.set("value", "1" if keepAspectRatio else "0")
-
+            kar.set("value", "1" if params["keep_aspect_ratio"] else "0")
+        
+        # Update rotation
+        ax = root.find(".//aX")
+        ay = root.find(".//aY")
+        az = root.find(".//aZ")
+        if ax is not None:
+            ax.set("value", str(params["rotation_x"]))
+        if ay is not None:
+            ay.set("value", str(params["rotation_y"]))
+        if az is not None:
+            az.set("value", str(params["rotation_z"]))
+        
+        # Update shear
+        shx = root.find(".//shearX")
+        shy = root.find(".//shearY")
+        if shx is not None:
+            shx.set("value", str(params["shear_x"]))
+        if shy is not None:
+            shy.set("value", str(params["shear_y"]))
+        
+        # Update perspective matrix if available
+        if "perspective" in params:
+            persp = root.find(".//flattenedPerspectiveTransform")
+            if persp is not None:
+                p = params["perspective"]
+                persp.set("m11", str(p["m11"]))
+                persp.set("m12", str(p["m12"]))
+                persp.set("m13", str(p["m13"]))
+                persp.set("m21", str(p["m21"]))
+                persp.set("m22", str(p["m22"]))
+                persp.set("m23", str(p["m23"]))
+                persp.set("m31", str(p["m31"]))
+                persp.set("m32", str(p["m32"]))
+                persp.set("m33", str(p["m33"]))
+        
         # Preserve original XML structure
         new_xml_str = ET.tostring(root, encoding="unicode")
         new_xml_str = f"<!DOCTYPE transform_params>\n{new_xml_str}"
         transform_mask.fromXML(new_xml_str)
 
-        # print("-" * 5)
-        # print(xml_str)
-        # print("-" * 5)
-        # print(new_xml_str)
-
-    def fit_mask_to_rect(self, mask, rect):
-        """Scale and position a transform mask to fit a reference rectangle (preserving aspect ratio)."""
-        doc = Krita.instance().activeDocument()
-        if not doc or not mask.type() == "transformmask":
-            print(f"Error: {mask.name()} is not a transform mask or no document active")
-            return
-
-        # print("rect", rect)
-
-        # scale
-        mask_bounds = mask.bounds()  # design
-        design_w = mask_bounds.width()
-        design_h = mask_bounds.height()
-
-        rect_w = rect["width"]
-        rect_h = rect["height"]
-
-        # print("rect", rect_w, rect_h)
-        # print("design", design_w, design_h)
-
-        scale_factor = min(rect_w / design_w, rect_h / design_h)
-
-        # print("scales", rect_w / design_w, rect_h / design_h)
-        # print("scale_factor", scale_factor)
-
-        # pos/scale
-        scale_x = scale_factor
-        scale_y = scale_factor
-
-        print("scaled dimesion", design_w * scale_x, design_h * scale_y)
-
-        center_x = rect["x"]
-        center_y = rect["y"]
-
-        # position
-        self.transform_mask_xml_transform(
-            mask, center_x, center_y, scale_x, scale_y, True
-        )
-
-        doc.refreshProjection()
-        doc.waitForDone()
-        time.sleep(0.1)
-
-    def reset_transform_mask_xml(self, transform_mask):
-        """
-        Reset a Krita transform mask to default (no transform).
-        """
-        xml_str = transform_mask.toXML()
-        root = ET.fromstring(xml_str)
-
-        # Reset position
-        tc = root.find(".//transformedCenter")
-        oc = root.find(".//originalCenter")
-        if tc is not None and oc is not None:
-            tc.set("x", oc.get("x"))
-            tc.set("y", oc.get("y"))
-
-        # Reset scale
-        sx = root.find(".//scaleX")
-        if sx is not None:
-            sx.set("value", "1")
-        sy = root.find(".//scaleY")
-        if sy is not None:
-            sy.set("value", "1")
-
-        # Reset rotation
-        ax = root.find(".//aX")
-        if ax is not None:
-            ax.set("value", "0")
-        ay = root.find(".//aY")
-        if ay is not None:
-            ay.set("value", "0")
-        az = root.find(".//aZ")
-        if az is not None:
-            az.set("value", "0")
-
-        # Reset shear
-        shx = root.find(".//shearX")
-        if shx is not None:
-            shx.set("value", "0")
-        shy = root.find(".//shearY")
-        if shy is not None:
-            shy.set("value", "0")
-
-        # Reset perspective matrix
-        persp = root.find(".//flattenedPerspectiveTransform")
-        if persp is not None:
-            persp.set("m11", "1")
-            persp.set("m12", "0")
-            persp.set("m13", "0")
-            persp.set("m21", "0")
-            persp.set("m22", "1")
-            persp.set("m23", "0")
-            persp.set("m31", "0")
-            persp.set("m32", "0")
-            persp.set("m33", "1")
-
-        # Apply back
-        new_xml_str = ET.tostring(root, encoding="unicode")
-        transform_mask.fromXML(new_xml_str)
-
-    def action_do_for_all(self):
+    def create_reverse_transform_mask(self):
+        """Create a reverse transform mask for the currently selected layer."""
         doc = Krita.instance().activeDocument()
         if not doc:
             QMessageBox.warning(None, "Error", "No active document!")
             return
-
-        if (
-            QMessageBox.question(
-                None,
-                "Transforming the Transformmasks!!",
-                "Do you want to contunie?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            == QMessageBox.No
-        ):
+        
+        # Get the currently selected layer
+        selected_layer = doc.activeNode()
+        if not selected_layer:
+            QMessageBox.warning(None, "Error", "No layer selected!")
             return
-
-        # progress bar
-        total_groups = sum(
-            1 for node in doc.rootNode().childNodes() if node.type() == "grouplayer"
-        )
-        progress = QProgressDialog(
-            "Transforming the Transform Layers...", "Cancel", 0, total_groups
-        )
-        progress.setWindowTitle("Batch Transform")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.show()
-
-        # print(f"Document size: {doc.width()}x{doc.height()}px")
-
-        # force long!
-        reply = QMessageBox.question(
-            None,
-            "Force Long Rectangle",
-            "Do you want to force long rectangle ?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-
-        do_force_long = False
-        if reply == QMessageBox.Yes:
-            do_force_long = True
-
-        vl_name_prefix_long = "#vl_long-"
-        rectangles_long = self.get_reference_rectangles(vl_name_prefix_long)
-        vl_name_prefix_wide = "#vl_wide-"
-        rectangles_wide = self.get_reference_rectangles(vl_name_prefix_wide)
-
-        if not rectangles_long:
-            QMessageBox.warning(
-                None, "Error", f"No {vl_name_prefix_long} vector layers found!"
-            )
-            return
-
-        if not rectangles_wide:
-            QMessageBox.warning(
-                None, "Error", f"No {vl_name_prefix_wide} vector layers found!"
-            )
-            return
-
-        # Process all transform masks
-        for mask in self.find_all_transform_masks(doc.rootNode()):
-            # reset the t-mask
-            self.reset_transform_mask_xml(mask)
-
-            mask_bounds = mask.bounds()  # design
-            design_w = mask_bounds.width()
-            design_h = mask_bounds.height()
-            if do_force_long:  # long
-                rectangles = rectangles_long
-            else:
-                if design_h >= design_w:
-                    # long
-                    rectangles = rectangles_long
-                else:
-                    # wide
-                    rectangles = rectangles_wide
-
-            # match the t-mask name with vector layer name (#vl_long-black->black must be inside tmaks layer name eg. tm-black)
-            mask_name = mask.name().lower()
-            for color, rect in rectangles.items():
-                if color in mask_name:
-                    self.fit_mask_to_rect(mask, rect)
-                    break
-
-            # progress
-            progress.setValue(progress.value() + 1)
-            QApplication.processEvents()
-
-        progress.close()
-        QMessageBox.information(None, "Done", "Transform Masks fitted to rectangles!")
-
-    def action_do_for_selected(self):
-        doc = Krita.instance().activeDocument()
-        if not doc:
-            QMessageBox.warning(None, "Error", "No active document!")
-            return
-
-        if (
-            QMessageBox.question(
-                None,
-                "Transforming the One Transformmasks!!",
-                "Do you want to contunie?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            == QMessageBox.No
-        ):
-            return
-        # THE ONE!
-        mask = doc.activeNode()
-
-        if mask.type() != "transformmask":
-            QMessageBox.warning(None, "Error", "Selected layer must be transform mask!")
-            return
-
-        # force long!
-        reply = QMessageBox.question(
-            None,
-            "Force Long Rectangle",
-            "Do you want to force long rectangle ?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-
-        do_force_long = False
-        if reply == QMessageBox.Yes:
-            do_force_long = True
-
-        vl_name_prefix_long = "#vl_long-"
-        rectangle_long = self.get_reference_rectangle_single(
-            mask.parentNode().parentNode(), vl_name_prefix_long
-        )
-        vl_name_prefix_wide = "#vl_wide-"
-        rectangle_wide = self.get_reference_rectangle_single(
-            mask.parentNode().parentNode(), vl_name_prefix_wide
-        )
-
-        if not rectangle_long:
-            QMessageBox.warning(
-                None, "Error", f"No {vl_name_prefix_long} vector layers found!"
-            )
-            return
-
-        if not rectangle_wide:
-            QMessageBox.warning(
-                None, "Error", f"No {vl_name_prefix_wide} vector layers found!"
-            )
-            return
-
-        # reset the t-mask
-        self.reset_transform_mask_xml(mask)
-
-        mask_bounds = mask.bounds()  # design
-        design_w = mask_bounds.width()
-        design_h = mask_bounds.height()
-        if do_force_long:  # long
-            rectangles = rectangle_long
-        else:
-            if design_h >= design_w:
-                # long
-                rectangles = rectangle_long
-            else:
-                # wide
-                rectangles = rectangle_wide
-
-        # match the t-mask name with vector layer name (#vl_long-black->black must be inside tmaks layer name eg. tm-black)
-        mask_name = mask.name().lower()
-        for color, rect in rectangles.items():
-            if color in mask_name:
-                self.fit_mask_to_rect(mask, rect)
+        
+        # Check if the user has a transform mask selected
+        source_mask = None
+        for node in doc.rootNode().childNodes():
+            if self.find_transform_mask_in_tree(node):
+                source_mask = self.find_transform_mask_in_tree(node)
                 break
+        
+        if not source_mask:
+            # Check if the selected layer is a transform mask itself
+            if selected_layer.type() == "transformmask":
+                source_mask = selected_layer
+            else:
+                # Let user select which transform mask to reverse
+                QMessageBox.warning(None, "Error", "No transform mask found! Please select a layer with a transform mask.")
+                return
+        
+        # Create a new transform mask on the selected layer
+        reverse_mask = doc.createNode("transformmask", "Reverse Transform")
+        selected_layer.addChildNode(reverse_mask, None)
+        
+        # Get parameters from source transform mask
+        params = self.get_transform_parameters(source_mask)
+        
+        # Calculate inverse parameters
+        inverse_params = self.calculate_inverse_parameters(params)
+        
+        # Apply inverse parameters to the new transform mask
+        self.apply_transform_parameters(reverse_mask, inverse_params)
+        
+        # Refresh the document to see changes
+        doc.refreshProjection()
+        
+        QMessageBox.information(None, "Success", "Reverse transform mask created successfully!")
 
-        QMessageBox.information(None, "Done", "1T-mask fitted to rectangles!")
+    def find_transform_mask_in_tree(self, node):
+        """Recursively find a transform mask in the layer tree."""
+        if node.type() == "transformmask":
+            return node
+        
+        for child in node.childNodes():
+            result = self.find_transform_mask_in_tree(child)
+            if result:
+                return result
+        
+        return None
